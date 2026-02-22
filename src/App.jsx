@@ -98,14 +98,55 @@ function BreakingBadge() {
   );
 }
 
-function SummaryPanel({ execSummary, detailSummary, url }) {
+async function generateFullSummary(title, execSummary) {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1000,
+      messages: [{
+        role: "user",
+        content: `You are a news analyst. Based on this news headline and brief summary, write a full 2-3 paragraph analysis in English. Cover: what happened, why it matters, and broader context or implications. Be factual and concise. Do not use bullet points.
+
+Headline: ${title}
+Brief summary: ${execSummary}
+
+Write the full summary now:`
+      }]
+    })
+  });
+  const data = await response.json();
+  return data.content?.[0]?.text || execSummary;
+}
+
+function SummaryPanel({ execSummary, title, url }) {
   const [mode, setMode] = useState("exec");
+  const [fullSummary, setFullSummary] = useState(null);
+  const [loadingFull, setLoadingFull] = useState(false);
+
+  const handleFullClick = async () => {
+    setMode("detail");
+    if (!fullSummary && !loadingFull) {
+      setLoadingFull(true);
+      try {
+        const result = await generateFullSummary(title, execSummary);
+        setFullSummary(result);
+      } catch (e) {
+        setFullSummary("Could not generate full summary. Please visit the source article.");
+      }
+      setLoadingFull(false);
+    }
+  };
+
   return (
     <div style={{ marginTop: 14 }} onClick={e => e.stopPropagation()}>
       <div style={{ display: "flex", gap: 4, marginBottom: 8, alignItems: "center" }}>
-        {[["exec", "Exec Summary"], ["detail", "Full Summary"]].map(([k, label]) => (
-          <button key={k} onClick={() => setMode(k)} style={{ background: mode === k ? "#4A4A52" : "#2E2E36", border: `1px solid ${mode === k ? "#6A6A74" : "#3E3E48"}`, color: mode === k ? "#FFFFFF" : "#8A8A96", fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", padding: "4px 12px", borderRadius: 4, cursor: "pointer", textTransform: "uppercase" }}>{label}</button>
-        ))}
+        <button onClick={() => setMode("exec")} style={{ background: mode === "exec" ? "#4A4A52" : "#2E2E36", border: `1px solid ${mode === "exec" ? "#6A6A74" : "#3E3E48"}`, color: mode === "exec" ? "#FFFFFF" : "#8A8A96", fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", padding: "4px 12px", borderRadius: 4, cursor: "pointer", textTransform: "uppercase" }}>Exec Summary</button>
+        <button onClick={handleFullClick} style={{ background: mode === "detail" ? "#4A4A52" : "#2E2E36", border: `1px solid ${mode === "detail" ? "#6A6A74" : "#3E3E48"}`, color: mode === "detail" ? "#FFFFFF" : "#8A8A96", fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", padding: "4px 12px", borderRadius: 4, cursor: "pointer", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 5 }}>
+          {loadingFull ? <span style={{ display: "inline-block", animation: "spin 1s linear infinite" }}>↻</span> : null}
+          Full Summary
+        </button>
         {url && (
           <a href={url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
             style={{ marginLeft: "auto", fontSize: 9, color: "#8A8A96", textDecoration: "none", padding: "4px 10px", border: "1px solid #3E3E48", borderRadius: 4 }}>
@@ -114,9 +155,24 @@ function SummaryPanel({ execSummary, detailSummary, url }) {
         )}
       </div>
       <div style={{ background: "#1E1E26", border: "1px solid #3E3E48", borderLeft: "3px solid #5A5A64", borderRadius: 6, padding: "12px 14px" }}>
-        <p style={{ fontSize: mode === "exec" ? 13 : 12, color: mode === "exec" ? "#E8E8F0" : "#B0B0BC", lineHeight: mode === "exec" ? 1.6 : 1.75, margin: 0 }}>
-          {mode === "exec" ? execSummary : detailSummary}
-        </p>
+        {mode === "exec" ? (
+          <p style={{ fontSize: 13, color: "#E8E8F0", lineHeight: 1.6, margin: 0 }}>{execSummary}</p>
+        ) : loadingFull ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {[...Array(3)].map((_, i) => (
+              <div key={i} style={{ height: 13, background: "#2E2E38", borderRadius: 3, width: i === 2 ? "60%" : "100%", animation: "pulse 1.4s ease-in-out infinite", animationDelay: `${i * 0.15}s` }} />
+            ))}
+            <div style={{ height: 13, background: "#2E2E38", borderRadius: 3, width: "85%", animation: "pulse 1.4s ease-in-out infinite", animationDelay: "0.3s" }} />
+            <div style={{ height: 13, background: "#2E2E38", borderRadius: 3, width: "100%", animation: "pulse 1.4s ease-in-out infinite", animationDelay: "0.45s" }} />
+            <div style={{ height: 13, background: "#2E2E38", borderRadius: 3, width: "70%", animation: "pulse 1.4s ease-in-out infinite", animationDelay: "0.6s" }} />
+          </div>
+        ) : (
+          <div>
+            {(fullSummary || "").split("\n\n").filter(p => p.trim()).map((para, i) => (
+              <p key={i} style={{ fontSize: 12, color: "#B0B0BC", lineHeight: 1.75, margin: i === 0 ? 0 : "12px 0 0 0" }}>{para}</p>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -146,7 +202,7 @@ function NewsCard({ item, index }) {
         </div>
       </div>
       <h3 style={{ fontSize: 14, fontWeight: 600, color: expanded || hovered ? "#FFFFFF" : "#E0E0EC", lineHeight: 1.45, margin: 0, fontFamily: "'Playfair Display',Georgia,serif", letterSpacing: "-0.01em", transition: "color 0.2s" }}>{item.title}</h3>
-      {expanded && <SummaryPanel execSummary={item.execSummary} detailSummary={item.detailSummary} url={item.url} />}
+      {expanded && <SummaryPanel execSummary={item.execSummary} title={item.title} url={item.url} />}
     </div>
   );
 }
