@@ -1,0 +1,8 @@
+{
+  "short_name": "Doha News",
+  "name": "Doha Intelligence — News Desk",
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#1C1C24",
+  "background_color": "#1C1C24"
+}
