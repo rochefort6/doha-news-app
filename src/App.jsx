@@ -16,7 +16,7 @@ const RSS_SOURCES = [
   { categoryKey: "energy",        source: "Offshore Energy",   url: "https://www.offshore-energy.biz/feed/" },
 ];
 
-const RSS2JSON = "https://api.rss2json.com/v1/api.json?rss_url=";
+const RSS2JSON = "https://api.rss2json.com/v1/api.json?api_key=okj3n5xnc8zm0rd4q17o2pu37xhhwhno8rcw8mja&rss_url=";
 
 const CATEGORIES = [
   { key: "all",           label: "All",           icon: "◎" },
