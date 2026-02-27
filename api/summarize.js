@@ -1,8 +1,7 @@
-// api/summarize.js
-// Vercel Serverless Function — Claude API proxy
-// Required: ANTHROPIC_API_KEY in Vercel Environment Variables
+// api/summarize.js  ← CommonJS形式（Vercel標準）
+// Required: ANTHROPIC_API_KEY を Vercel Environment Variables に設定
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -10,26 +9,7 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  // ★ Vercel does NOT auto-parse body for ESM handlers — read raw stream
-  let body = "";
-  try {
-    await new Promise((resolve, reject) => {
-      req.on("data", chunk => { body += chunk; });
-      req.on("end", resolve);
-      req.on("error", reject);
-    });
-  } catch (e) {
-    return res.status(400).json({ error: "Failed to read request body" });
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(body);
-  } catch (e) {
-    return res.status(400).json({ error: "Invalid JSON body" });
-  }
-
-  const { title, execSummary } = parsed;
+  const { title, execSummary } = req.body || {};
   if (!title) return res.status(400).json({ error: "title is required" });
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -74,4 +54,4 @@ Write the full analysis now:`,
     console.error("Summarize handler error:", e);
     return res.status(500).json({ error: e.message });
   }
-}
+};
