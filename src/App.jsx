@@ -3,18 +3,18 @@ import { useState, useEffect, useCallback } from "react";
 const RSS_PROXY = "/api/rss?url=";
 
 const RSS_SOURCES = [
-  // Qatar & Middle East
-  { categoryKey: "qatar",         source: "Al Jazeera",      url: "https://www.aljazeera.com/xml/rss/all.xml" },
-  { categoryKey: "qatar",         source: "Gulf Times",       url: "https://www.gulf-times.com/rss/feed/Qatar" },
+  // Qatar & Middle East — keyword-filtered from broad feeds
+  { categoryKey: "qatar",         source: "Al Jazeera",      url: "https://www.aljazeera.com/xml/rss/all.xml",              broadFilter: true },
+  { categoryKey: "qatar",         source: "Gulf Times",       url: "https://www.gulf-times.com/rss/feed/Qatar",             broadFilter: false },
   // International
-  { categoryKey: "international", source: "BBC World",        url: "https://feeds.bbci.co.uk/news/world/rss.xml" },
-  { categoryKey: "international", source: "Reuters World",    url: "https://feeds.reuters.com/reuters/worldNews" },
+  { categoryKey: "international", source: "BBC World",        url: "https://feeds.bbci.co.uk/news/world/rss.xml",           broadFilter: false },
+  { categoryKey: "international", source: "Reuters World",    url: "https://feeds.reuters.com/reuters/worldNews",           broadFilter: false },
   // Business
-  { categoryKey: "business",      source: "BBC Business",     url: "https://feeds.bbci.co.uk/news/business/rss.xml" },
-  { categoryKey: "business",      source: "Reuters Business", url: "https://feeds.reuters.com/reuters/businessNews" },
-  // Energy & LNG
-  { categoryKey: "energy",        source: "Reuters Energy",   url: "https://feeds.reuters.com/reuters/energy" },
-  { categoryKey: "energy",        source: "Offshore Energy",  url: "https://www.offshore-energy.biz/feed/" },
+  { categoryKey: "business",      source: "BBC Business",     url: "https://feeds.bbci.co.uk/news/business/rss.xml",        broadFilter: false },
+  { categoryKey: "business",      source: "Reuters Business", url: "https://feeds.reuters.com/reuters/businessNews",        broadFilter: false },
+  // Energy & LNG — keyword-filtered from Reuters general
+  { categoryKey: "energy",        source: "Reuters Energy",   url: "https://feeds.reuters.com/reuters/energy",              broadFilter: false },
+  { categoryKey: "energy",        source: "Offshore Energy",  url: "https://www.offshore-energy.biz/feed/",                broadFilter: false },
 ];
 
 const CATEGORIES = [
@@ -32,11 +32,28 @@ const CAT_COLORS = {
   energy:        { accent: "#FFD740", glow: "#FFD74030" },
 };
 
+// Keywords for relevance filtering
 const KEYWORDS = {
-  qatar:         ["qatar","doha","gulf","middle east","saudi","uae","dubai","iran","iraq","arab","israel","palestine","gaza","gcc","riyadh","abu dhabi","kuwait","bahrain","oman"],
-  energy:        ["lng","liquefied","natural gas","oil","energy","petroleum","opec","offshore","pipeline","qatarenergy","renewable","solar","carbon","emissions","crude"],
-  business:      ["economy","market","stock","trade","gdp","inflation","investment","bank","finance","earnings","merger","acquisition","startup","ipo","revenue"],
-  international: ["us ","uk ","china","russia","europe","nato","united nations","election","government","president","war","conflict","treaty","sanctions","diplomacy"],
+  qatar: [
+    "qatar","doha","gulf","middle east","saudi","uae","dubai","iran","iraq",
+    "arab","israel","palestine","gaza","gcc","riyadh","abu dhabi","kuwait",
+    "bahrain","oman","west bank","al jazeera","qatari","qatarenergy","hamad",
+  ],
+  international: [
+    "us ","usa","uk ","china","russia","europe","nato","united nations",
+    "election","government","president","war","conflict","treaty","sanctions",
+    "diplomacy","congress","parliament","bilateral","g7","g20","imf","world bank",
+  ],
+  business: [
+    "economy","market","stock","trade","gdp","inflation","investment","bank",
+    "finance","earnings","merger","acquisition","startup","ipo","revenue",
+    "recession","growth","interest rate","fed","central bank","commodity",
+  ],
+  energy: [
+    "lng","liquefied","natural gas","oil","energy","petroleum","opec",
+    "offshore","pipeline","qatarenergy","renewable","solar","carbon",
+    "emissions","crude","barrel","refinery","gas field","hydrogen",
+  ],
 };
 
 function scoreArticle(title, desc, key) {
@@ -53,7 +70,19 @@ function timeAgo(d) {
 }
 
 function stripHtml(h) {
-  return (h || "").replace(/<[^>]*>/g, "").replace(/&[a-zA-Z]+;/g, " ").replace(/\s+/g, " ").trim();
+  return (h || "")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&#x27;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 async function fetchRSS(src) {
@@ -65,10 +94,10 @@ async function fetchRSS(src) {
   const items = Array.from(xml.querySelectorAll("item"));
   return items.map(item => {
     const get = tag => item.querySelector(tag)?.textContent?.trim() || "";
-    const title = get("title");
-    const desc = stripHtml(get("description"));
+    const title = stripHtml(get("title"));   // ★ decode entities in title too
+    const desc  = stripHtml(get("description"));
     const pubDate = get("pubDate");
-    const link = get("link");
+    const link  = get("link");
     const ageHours = (Date.now() - new Date(pubDate)) / 3600000;
     const sentences = desc.match(/[^.!?]+[.!?]+/g) || [];
     const execSummary = sentences.slice(0, 2).join(" ") || desc.slice(0, 180) + "…";
@@ -87,14 +116,17 @@ function BreakingBadge() {
   );
 }
 
-// ✅ FIXED: Claude API via Vercel serverless function to avoid CORS errors
+// ★ FIXED: Calls /api/summarize (Vercel serverless) instead of Anthropic directly
 async function generateFullSummary(title, execSummary) {
   const response = await fetch("/api/summarize", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title, execSummary }),
   });
-  if (!response.ok) throw new Error("Summarize API error");
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || "Summarize API error");
+  }
   const data = await response.json();
   return data.summary || execSummary;
 }
@@ -103,49 +135,73 @@ function SummaryPanel({ execSummary, title, url }) {
   const [mode, setMode] = useState("exec");
   const [fullSummary, setFullSummary] = useState(null);
   const [loadingFull, setLoadingFull] = useState(false);
+  const [error, setError] = useState(null);
 
   const handleFullClick = async () => {
     setMode("detail");
     if (!fullSummary && !loadingFull) {
       setLoadingFull(true);
+      setError(null);
       try {
         const result = await generateFullSummary(title, execSummary);
         setFullSummary(result);
       } catch (e) {
-        setFullSummary("Could not generate full summary. Please visit the source article.");
+        setError(e.message || "Could not generate summary.");
       }
       setLoadingFull(false);
     }
   };
 
+  const btnBase = {
+    border: "1px solid #3E3E48",
+    fontSize: 9,
+    fontWeight: 700,
+    letterSpacing: "0.1em",
+    padding: "4px 12px",
+    borderRadius: 4,
+    cursor: "pointer",
+    textTransform: "uppercase",
+  };
+
   return (
     <div style={{ marginTop: 14 }} onClick={e => e.stopPropagation()}>
       <div style={{ display: "flex", gap: 4, marginBottom: 8, alignItems: "center" }}>
-        <button onClick={() => setMode("exec")} style={{ background: mode === "exec" ? "#4A4A52" : "#2E2E36", border: `1px solid ${mode === "exec" ? "#6A6A74" : "#3E3E48"}`, color: mode === "exec" ? "#FFFFFF" : "#8A8A96", fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", padding: "4px 12px", borderRadius: 4, cursor: "pointer", textTransform: "uppercase" }}>Exec Summary</button>
-        <button onClick={handleFullClick} style={{ background: mode === "detail" ? "#4A4A52" : "#2E2E36", border: `1px solid ${mode === "detail" ? "#6A6A74" : "#3E3E48"}`, color: mode === "detail" ? "#FFFFFF" : "#8A8A96", fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", padding: "4px 12px", borderRadius: 4, cursor: "pointer", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 5 }}>
-          {loadingFull ? <span style={{ display: "inline-block", animation: "spin 1s linear infinite" }}>↻</span> : null}
+        <button
+          onClick={() => setMode("exec")}
+          style={{ ...btnBase, background: mode === "exec" ? "#4A4A52" : "#2E2E36", borderColor: mode === "exec" ? "#6A6A74" : "#3E3E48", color: mode === "exec" ? "#FFF" : "#8A8A96" }}>
+          Exec Summary
+        </button>
+        <button
+          onClick={handleFullClick}
+          style={{ ...btnBase, background: mode === "detail" ? "#4A4A52" : "#2E2E36", borderColor: mode === "detail" ? "#6A6A74" : "#3E3E48", color: mode === "detail" ? "#FFF" : "#8A8A96", display: "flex", alignItems: "center", gap: 5 }}>
+          {loadingFull && <span style={{ display: "inline-block", animation: "spin 1s linear infinite" }}>↻</span>}
           Full Summary ✦
         </button>
         {url && (
           <a href={url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
-            style={{ marginLeft: "auto", fontSize: 9, color: "#8A8A96", textDecoration: "none", padding: "4px 10px", border: "1px solid #3E3E48", borderRadius: 4, fontFamily: "'Inter', sans-serif" }}>
+            style={{ marginLeft: "auto", fontSize: 9, color: "#8A8A96", textDecoration: "none", padding: "4px 10px", border: "1px solid #3E3E48", borderRadius: 4 }}>
             SOURCE →
           </a>
         )}
       </div>
+
       <div style={{ background: "#1E1E26", border: "1px solid #3E3E48", borderLeft: "3px solid #5A5A64", borderRadius: 6, padding: "14px 16px" }}>
         {mode === "exec" ? (
-          <p style={{ fontSize: 14, color: "#E8E8F0", lineHeight: 1.75, margin: 0, fontFamily: "'Inter', sans-serif", fontWeight: 400 }}>{execSummary}</p>
+          <p style={{ fontSize: 14, color: "#E8E8F0", lineHeight: 1.8, margin: 0 }}>{execSummary}</p>
         ) : loadingFull ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {[...Array(5)].map((_, i) => (
               <div key={i} style={{ height: 13, background: "#2E2E38", borderRadius: 3, width: i === 4 ? "60%" : "100%", animation: "pulse 1.4s ease-in-out infinite", animationDelay: `${i * 0.15}s` }} />
             ))}
           </div>
+        ) : error ? (
+          <p style={{ fontSize: 13, color: "#FF6B6B", lineHeight: 1.6, margin: 0 }}>
+            ⚠ {error} — <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: "#5BB8F5" }}>Visit source article</a>
+          </p>
         ) : (
           <div>
             {(fullSummary || "").split("\n\n").filter(p => p.trim()).map((para, i) => (
-              <p key={i} style={{ fontSize: 14, color: "#C0C0CC", lineHeight: 1.8, margin: i === 0 ? 0 : "14px 0 0 0", fontFamily: "'Inter', sans-serif", fontWeight: 400 }}>{para}</p>
+              <p key={i} style={{ fontSize: 14, color: "#C0C0CC", lineHeight: 1.85, margin: i === 0 ? 0 : "14px 0 0 0" }}>{para}</p>
             ))}
           </div>
         )}
@@ -168,16 +224,17 @@ function NewsCard({ item, index }) {
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.08em", color: col.accent, background: col.accent + "18", border: `1px solid ${col.accent}50`, padding: "2px 9px", borderRadius: 3, fontFamily: "'Inter', sans-serif" }}>{catLabel}</span>
+          <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.08em", color: col.accent, background: col.accent + "18", border: `1px solid ${col.accent}50`, padding: "2px 9px", borderRadius: 3 }}>{catLabel}</span>
           {item.isBreaking && <BreakingBadge />}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 10, color: "#888896", fontFamily: "'DM Mono', monospace" }}>{item.source}</span>
-          <span style={{ fontSize: 10, color: "#666672", fontFamily: "'Inter', sans-serif" }}>{item.time}</span>
+          <span style={{ fontSize: 10, color: "#666672" }}>{item.time}</span>
           <span style={{ fontSize: 13, color: expanded ? col.accent : "#666672", display: "inline-block", transform: expanded ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s, color 0.2s" }}>›</span>
         </div>
       </div>
-      <h3 style={{ fontSize: 15, fontWeight: 600, color: expanded || hovered ? "#FFFFFF" : "#E0E0EC", lineHeight: 1.5, margin: 0, fontFamily: "'Playfair Display', Georgia, serif", letterSpacing: "-0.01em", transition: "color 0.2s" }}>{item.title}</h3>
+      {/* ★ フォント: Meiryo / Noto Sans JP で可読性向上 */}
+      <h3 style={{ fontSize: 15, fontWeight: 600, color: expanded || hovered ? "#FFFFFF" : "#E0E0EC", lineHeight: 1.55, margin: 0, transition: "color 0.2s" }}>{item.title}</h3>
       {expanded && <SummaryPanel execSummary={item.execSummary} title={item.title} url={item.url} />}
     </div>
   );
@@ -223,9 +280,13 @@ export default function App() {
         statusMap[src.source] = "ok";
         items.forEach(item => {
           if (!item.title || seen.has(item.title)) return;
-          const score = scoreArticle(item.title, item.desc, src.categoryKey);
-          const isBroad = src.url.includes("all.xml") || src.url.includes("bbci");
-          if (isBroad && score === 0) return;
+          // ★ フィルタリング説明:
+          // broadFilter=true → キーワードスコア1以上の記事のみ採用（広範フィードから関連記事だけ取得）
+          // broadFilter=false → カテゴリ専用フィード → 全件採用（元々その分野の記事しかない）
+          if (src.broadFilter) {
+            const score = scoreArticle(item.title, item.desc, src.categoryKey);
+            if (score === 0) return;
+          }
           seen.add(item.title);
           results.push({
             id: item.title + src.categoryKey,
@@ -263,23 +324,30 @@ export default function App() {
   const dohaDate = now.toLocaleDateString("en-US", { timeZone: "Asia/Qatar", weekday: "long", month: "long", day: "numeric" });
 
   return (
-    <div style={{ minHeight: "100vh", background: "#1C1C24", fontFamily: "'Inter', 'Helvetica Neue', sans-serif", color: "#E0E0EC" }}>
+    // ★ フォント: Noto Sans JP → メイリオ → ゴシック系の順でフォールバック
+    <div style={{ minHeight: "100vh", background: "#1C1C24", fontFamily: "'Noto Sans JP', 'Meiryo', 'メイリオ', 'Hiragino Kaku Gothic ProN', 'ヒラギノ角ゴ ProN W3', 'Yu Gothic', 'YuGothic', 'MS Gothic', 'MS ゴシック', sans-serif", color: "#E0E0EC" }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Inter:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=DM+Mono:wght@400;500&display=swap');
         @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
         @keyframes pulse  { 0%,100%{opacity:1} 50%{opacity:0.4} }
         @keyframes spin   { to { transform:rotate(360deg); } }
         * { box-sizing:border-box; }
         ::-webkit-scrollbar { width:4px; height:4px; }
         ::-webkit-scrollbar-thumb { background:#4A4A54; border-radius:2px; }
-        body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+        body {
+          -webkit-font-smoothing: antialiased;
+          -moz-osx-font-smoothing: grayscale;
+          font-size: 15px;
+          line-height: 1.75;
+        }
+        h1, h2, h3 { font-weight: 700; }
       `}</style>
 
       {showBanner && breaking.length > 0 && (
         <div style={{ background: "#FF193312", borderBottom: "1px solid #FF193330", padding: "8px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, overflow: "hidden" }}>
             <BreakingBadge />
-            <span style={{ fontSize: 12, color: "#C8C8D4", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "72vw", fontFamily: "'Inter', sans-serif", fontWeight: 400 }}>
+            <span style={{ fontSize: 12, color: "#C8C8D4", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "72vw" }}>
               {breaking.slice(0, 3).map(n => n.title.slice(0, 60) + "…").join("  ·  ")}
             </span>
           </div>
@@ -293,13 +361,13 @@ export default function App() {
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                 <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#F5A623", boxShadow: "0 0 10px #F5A62380" }} />
-                <span style={{ fontSize: 9, letterSpacing: "0.22em", color: "#F5A623", fontWeight: 700, textTransform: "uppercase", fontFamily: "'Inter', sans-serif" }}>Doha Intelligence</span>
+                <span style={{ fontSize: 9, letterSpacing: "0.22em", color: "#F5A623", fontWeight: 700, textTransform: "uppercase" }}>Doha Intelligence</span>
               </div>
-              <h1 style={{ fontSize: 26, fontWeight: 700, color: "#FFFFFF", fontFamily: "'Playfair Display', serif", letterSpacing: "-0.02em", margin: 0 }}>News Desk</h1>
+              <h1 style={{ fontSize: 26, fontWeight: 700, color: "#FFFFFF", letterSpacing: "-0.01em", margin: 0 }}>News Desk</h1>
             </div>
             <div style={{ textAlign: "right" }}>
               <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 22, color: "#FFFFFF", fontWeight: 500, letterSpacing: "0.04em" }}>{dohaTime}</div>
-              <div style={{ fontSize: 10, color: "#666672", marginTop: 4, fontFamily: "'Inter', sans-serif" }}>{dohaDate} · AST</div>
+              <div style={{ fontSize: 10, color: "#666672", marginTop: 4 }}>{dohaDate} · AST</div>
             </div>
           </div>
           <div style={{ display: "flex", gap: 2, overflowX: "auto" }}>
@@ -308,7 +376,7 @@ export default function App() {
               const col = cat.key !== "all" ? CAT_COLORS[cat.key] : null;
               const count = cat.key === "all" ? articles.length : articles.filter(a => a.categoryKey === cat.key).length;
               return (
-                <button key={cat.key} onClick={() => setActiveCategory(cat.key)} style={{ background: isActive ? "#2A2A34" : "transparent", border: "none", borderBottom: `2px solid ${isActive ? (col ? col.accent : "#F5A623") : "transparent"}`, color: isActive ? "#FFFFFF" : "#7A7A86", padding: "8px 13px 10px", cursor: "pointer", fontSize: 12, fontWeight: 500, whiteSpace: "nowrap", transition: "all 0.15s", borderRadius: "5px 5px 0 0", display: "flex", alignItems: "center", gap: 5, flexShrink: 0, fontFamily: "'Inter', sans-serif", letterSpacing: "0.01em" }}>
+                <button key={cat.key} onClick={() => setActiveCategory(cat.key)} style={{ background: isActive ? "#2A2A34" : "transparent", border: "none", borderBottom: `2px solid ${isActive ? (col ? col.accent : "#F5A623") : "transparent"}`, color: isActive ? "#FFFFFF" : "#7A7A86", padding: "8px 13px 10px", cursor: "pointer", fontSize: 12, fontWeight: 500, whiteSpace: "nowrap", transition: "all 0.15s", borderRadius: "5px 5px 0 0", display: "flex", alignItems: "center", gap: 5, flexShrink: 0, letterSpacing: "0.01em" }}>
                   <span style={{ fontSize: 13 }}>{cat.icon}</span>
                   {cat.label}
                   <span style={{ background: isActive ? "#3A3A44" : "transparent", color: isActive ? (col ? col.accent : "#F5A623") : "#4A4A56", fontSize: 9, padding: "1px 6px", borderRadius: 8, fontFamily: "'DM Mono', monospace" }}>{count}</span>
@@ -329,8 +397,8 @@ export default function App() {
           ].map((s, i) => (
             <div key={i} style={{ background: "#242430", border: "1px solid #3A3A44", borderRadius: 8, padding: "11px 13px" }}>
               <div style={{ fontSize: 20, fontWeight: 600, color: "#FFFFFF", fontFamily: "'DM Mono', monospace" }}>{s.v}</div>
-              <div style={{ fontSize: 10, color: "#8A8A96", marginTop: 2, fontFamily: "'Inter', sans-serif" }}>{s.l}</div>
-              <div style={{ fontSize: 9, color: s.l === "Sources Live" && errCount > 0 ? "#FF1933" : "#525260", marginTop: 2, fontFamily: "'Inter', sans-serif" }}>{s.s}</div>
+              <div style={{ fontSize: 10, color: "#8A8A96", marginTop: 2 }}>{s.l}</div>
+              <div style={{ fontSize: 9, color: s.l === "Sources Live" && errCount > 0 ? "#FF1933" : "#525260", marginTop: 2 }}>{s.s}</div>
             </div>
           ))}
         </div>
@@ -338,13 +406,13 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{ width: 3, height: 14, background: activeCategory !== "all" && CAT_COLORS[activeCategory] ? CAT_COLORS[activeCategory].accent : "#F5A623", borderRadius: 2 }} />
-            <span style={{ fontSize: 10, fontWeight: 700, color: "#A0A0AC", letterSpacing: "0.12em", textTransform: "uppercase", fontFamily: "'Inter', sans-serif" }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: "#A0A0AC", letterSpacing: "0.12em", textTransform: "uppercase" }}>
               {activeCategory === "all" ? "All Stories" : CATEGORIES.find(c => c.key === activeCategory)?.label}
             </span>
-            <span style={{ fontSize: 9, color: "#4A4A56", fontFamily: "'Inter', sans-serif" }}>· tap to expand</span>
+            <span style={{ fontSize: 9, color: "#4A4A56" }}>· tap to expand</span>
           </div>
           <button onClick={fetchAll} disabled={loading}
-            style={{ background: "none", border: "1px solid #3A3A44", color: loading ? "#4A4A56" : "#8A8A96", fontSize: 10, padding: "5px 12px", borderRadius: 5, cursor: loading ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 6, fontFamily: "'Inter', sans-serif" }}
+            style={{ background: "none", border: "1px solid #3A3A44", color: loading ? "#4A4A56" : "#8A8A96", fontSize: 10, padding: "5px 12px", borderRadius: 5, cursor: loading ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 6 }}
             onMouseEnter={e => { if (!loading) { e.currentTarget.style.borderColor = "#6A6A74"; e.currentTarget.style.color = "#FFFFFF"; } }}
             onMouseLeave={e => { e.currentTarget.style.borderColor = "#3A3A44"; e.currentTarget.style.color = loading ? "#4A4A56" : "#8A8A96"; }}>
             <span style={{ display: "inline-block", animation: loading ? "spin 1s linear infinite" : "none" }}>↻</span>
@@ -353,7 +421,7 @@ export default function App() {
         </div>
 
         {loading && articles.length === 0 ? <Skeleton /> : filtered.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "56px 0", color: "#525260", fontSize: 14, fontFamily: "'Inter', sans-serif" }}>No articles found.</div>
+          <div style={{ textAlign: "center", padding: "56px 0", color: "#525260", fontSize: 14 }}>No articles found.</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {filtered.slice(0, 60).map((item, i) => <NewsCard key={item.id} item={item} index={i} />)}
