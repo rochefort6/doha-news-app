@@ -1,6 +1,6 @@
 // api/summarize.js
-// Gemini API版 (無料枠あり)
-// Required: GEMINI_API_KEY を Vercel Environment Variables に設定
+// Groq API版（無料枠：1日14,400リクエスト）
+// Required: GROQ_API_KEY を Vercel Environment Variables に設定
 
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -13,8 +13,8 @@ module.exports = async function handler(req, res) {
   const { title, execSummary } = req.body || {};
   if (!title) return res.status(400).json({ error: "title is required" });
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY not configured" });
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: "GROQ_API_KEY not configured" });
 
   const prompt = `You are a news analyst for an expat audience in Doha, Qatar. Based on this headline and brief summary, write a 2–3 paragraph analysis in English. Cover: what happened, why it matters for Qatar or the broader region, and wider implications. Be factual and concise. No bullet points.
 
@@ -24,26 +24,27 @@ Brief summary: ${execSummary || ""}
 Write the full analysis now:`;
 
   try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 500 },
-        }),
-      }
-    );
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        max_tokens: 500,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
 
     if (!response.ok) {
       const err = await response.text();
-      console.error("Gemini API error:", err);
+      console.error("Groq API error:", err);
       return res.status(502).json({ error: "Upstream API error", detail: err });
     }
 
     const data = await response.json();
-    const summary = data.candidates?.[0]?.content?.parts?.[0]?.text || "Summary unavailable.";
+    const summary = data.choices?.[0]?.message?.content || "Summary unavailable.";
     return res.status(200).json({ summary });
 
   } catch (e) {
