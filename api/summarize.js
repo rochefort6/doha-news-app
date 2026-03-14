@@ -14,30 +14,56 @@ module.exports = async function handler(req, res) {
   if (!apiKey) return res.status(500).json({ error: "GROQ_API_KEY not configured" });
 
   let articleText = "";
+
+  // 1. まずはJina Readerで試す（BBCなどはこれで成功する）
   try {
-    // ★修正: Jina Reader APIを経由して、本文だけをクリーンに抽出する
     const jinaRes = await fetch(`https://r.jina.ai/${url}`, {
       headers: { "Accept": "text/plain" }
     });
-
     if (jinaRes.ok) {
-      articleText = await jinaRes.text();
-      // LLMのトークン上限を超えないよう、最大15000文字でカット
-      articleText = articleText.substring(0, 15000);
-    } else {
-      console.error("Jina API returned status:", jinaRes.status);
+      const text = await jinaRes.text();
+      // Cloudflareのブロック画面（Just a moment...等）ではないか確認
+      if (text.length > 300 && !text.includes("Just a moment...") && !text.includes("Enable JavaScript")) {
+        articleText = text;
+      }
     }
   } catch (e) {
-    console.error("Extraction error:", e);
+    console.error("Jina extraction error:", e);
   }
 
-  // 取得できた文字数が極端に少ない場合は失敗と判定
+  // 2. Jinaがブロックされた場合（Al Jazeera等）はGooglebotになりすまして直接HTMLを取得
+  if (!articleText) {
+    try {
+      const directRes = await fetch(url, {
+        headers: { 
+          // ニュースサイトは検索エンジンからのアクセスを許可している穴を突く
+          'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)' 
+        }
+      });
+      const html = await directRes.text();
+      // <p>タグの中身だけを抽出
+      const paragraphs = html.match(/<p\b[^>]*>(.*?)<\/p>/gis) || [];
+      const text = paragraphs
+        .map(p => p.replace(/<[^>]+>/g, '').trim())
+        .filter(p => p.length > 40)
+        .join("\n\n");
+        
+      if (text.length > 300) {
+        articleText = text;
+      }
+    } catch (e) {
+      console.error("Googlebot fallback error:", e);
+    }
+  }
+
+  // トークン上限対策
+  articleText = articleText.substring(0, 15000);
+
   const hasContent = articleText.length > 300;
   const textToAnalyze = hasContent 
     ? articleText 
-    : "Failed to extract the article text due to site security. Summarize based ONLY on the headline.";
+    : "Failed to extract the article text due to strict site security. Summarize based ONLY on the headline.";
 
-  // ★修正: AIに「具体的な固有名詞や数値を入れろ」と強く指示
   const prompt = `You are a news analyst for an expat audience in Doha, Qatar. 
 Read the following original article text carefully.
 
