@@ -1,4 +1,26 @@
 // api/summarize.js
+
+function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal })
+    .finally(() => clearTimeout(timer));
+}
+
+const extractText = (html) => {
+  const paragraphs = html.match(/<p\b[^>]*>(.*?)<\/p>/gis) || [];
+  return paragraphs
+    .map(p => p.replace(/<[^>]+>/g, '').trim())
+    .filter(p => p.length > 40)
+    .join("\n\n");
+};
+
+const isValidContent = (text) =>
+  text.length > 300 &&
+  !text.includes("Just a moment...") &&
+  !text.includes("Enable JavaScript") &&
+  !text.includes("Attention Required!");
+
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -10,79 +32,60 @@ module.exports = async function handler(req, res) {
   const { title, url } = req.body || {};
   if (!title || !url) return res.status(400).json({ error: "title and url are required" });
 
+  try { new URL(url); } catch {
+    return res.status(400).json({ error: "Invalid URL" });
+  }
+
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) return res.status(500).json({ error: "GROQ_API_KEY not configured" });
 
   let articleText = "";
 
-  // 本文抽出と判定のヘルパー関数
-  const extractText = (html) => {
-    const paragraphs = html.match(/<p\b[^>]*>(.*?)<\/p>/gis) || [];
-    return paragraphs
-      .map(p => p.replace(/<[^>]+>/g, '').trim())
-      .filter(p => p.length > 40)
-      .join("\n\n");
-  };
-
-  const isValidContent = (text) => {
-    return text.length > 300 && 
-           !text.includes("Just a moment...") && 
-           !text.includes("Enable JavaScript") && 
-           !text.includes("Attention Required!");
-  };
-
-  // --- 1. Jina Reader API（基本ルート） ---
+  // 1. Jina Reader API (primary)
   try {
-    const jinaRes = await fetch(`https://r.jina.ai/${url}`, { headers: { "Accept": "text/plain" } });
+    const jinaRes = await fetchWithTimeout(`https://r.jina.ai/${url}`, { headers: { "Accept": "text/plain" } });
     if (jinaRes.ok) {
       const text = await jinaRes.text();
       if (isValidContent(text)) articleText = text;
     }
-  } catch (e) { console.error("Jina error:", e); }
+  } catch (e) { console.error("Jina error:", e.message); }
 
-  // --- 2. Twitterbot偽装（SNSプレビューの抜け道を突く） ---
+  // 2. Twitterbot user-agent spoofing
   if (!articleText) {
     try {
-      const directRes = await fetch(url, {
-        headers: { 
+      const directRes = await fetchWithTimeout(url, {
+        headers: {
           'User-Agent': 'Mozilla/5.0 (compatible; Twitterbot/1.0)',
-          'Referer': 'https://t.co/'
-        }
+          'Referer': 'https://t.co/',
+        },
       });
       const html = await directRes.text();
-      if (isValidContent(html)) {
-        const text = extractText(html);
-        if (text.length > 300) articleText = text;
-      }
-    } catch (e) { console.error("Twitterbot error:", e); }
+      const text = extractText(html);
+      if (isValidContent(text)) articleText = text;
+    } catch (e) { console.error("Twitterbot error:", e.message); }
   }
 
-  // --- 3. AllOriginsプロキシ（別サーバーIPを経由してブロックを回避） ---
+  // 3. AllOrigins proxy
   if (!articleText) {
     try {
-      const proxyRes = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`);
+      const proxyRes = await fetchWithTimeout(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`);
       if (proxyRes.ok) {
         const data = await proxyRes.json();
-        if (data.contents && isValidContent(data.contents)) {
+        if (data.contents) {
           const text = extractText(data.contents);
-          if (text.length > 300) articleText = text;
+          if (isValidContent(text)) articleText = text;
         }
       }
-    } catch (e) { console.error("AllOrigins error:", e); }
+    } catch (e) { console.error("AllOrigins error:", e.message); }
   }
 
-  // 取得したテキストの文字数制限と判定
   articleText = articleText.substring(0, 15000);
-  const hasContent = articleText.length > 300;
-  
-  // 取得失敗時は、正直にAIにその旨を伝える
-  const textToAnalyze = hasContent 
-    ? articleText 
+
+  const textToAnalyze = articleText.length > 300
+    ? articleText
     : "Failed to extract the article text due to strict site security. Summarize based ONLY on the headline. Do not invent details.";
 
-  // プロンプト（詳細要約版）
-  const prompt = `You are a news analyst for an expat audience in Doha, Qatar. 
-Read the following original article text carefully.
+  const prompt = `You are a news analyst for an expat audience in Doha, Qatar. Read the following original article text carefully.
 
 Headline: ${title}
 Original Text:
@@ -93,7 +96,7 @@ Paragraph 1: Core Event (What happened, main conclusion).
 Paragraph 2: Key Details (Specific names, numbers, quotes, and critical facts).
 Paragraph 3: Background & Context (Prior events or broader context explicitly mentioned in the article).
 
-Constraints: 
+Constraints:
 - Do NOT invent facts, context, or prior events not explicitly mentioned in the text.
 - If the original text says "Failed to extract", state "Full article content could not be retrieved due to security." and briefly summarize the headline.
 - No bullet points.
@@ -101,18 +104,22 @@ Constraints:
 Write the 3-paragraph summary now:`;
 
   try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
+    const response = await fetchWithTimeout(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: "llama-3.3-70b-versatile",
+          max_tokens: 600,
+          messages: [{ role: "user", content: prompt }],
+        }),
       },
-      body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
-        max_tokens: 600,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
+      30000, // Groq may need more time for generation
+    );
 
     if (!response.ok) {
       const err = await response.text();
@@ -122,7 +129,6 @@ Write the 3-paragraph summary now:`;
     const data = await response.json();
     const summary = data.choices?.[0]?.message?.content || "Summary unavailable.";
     return res.status(200).json({ summary });
-
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, memo } from "react";
 
 const RSS_PROXY = "/api/rss?url=";
 
@@ -20,6 +20,9 @@ const CATEGORIES = [
   { key: "business",      label: "Business",      icon: "📈" },
   { key: "energy",        label: "Energy & LNG",  icon: "⚡" },
 ];
+
+// Object lookup is faster than CATEGORIES.find() on every render
+const CAT_LABELS = Object.fromEntries(CATEGORIES.map(c => [c.key, c.label]));
 
 const CAT_COLORS = {
   qatar:         { accent: "#F5A623", glow: "#F5A62330" },
@@ -89,29 +92,42 @@ async function fetchRSS(src) {
   const items = Array.from(xml.querySelectorAll("item"));
   return items.map(item => {
     const get = tag => item.querySelector(tag)?.textContent?.trim() || "";
-    const title = stripHtml(get("title"));
-    const desc  = stripHtml(get("description"));
+    const title   = stripHtml(get("title"));
+    const desc    = stripHtml(get("description"));
     const pubDate = get("pubDate");
-    const link  = get("link");
+    const link    = get("link");
     const ageHours = (Date.now() - new Date(pubDate)) / 3600000;
-    
-    // Exec Summaryの生成処理は完全に削除しました
     return { title, desc, pubDate, link, ageHours };
   });
 }
 
+// Isolated clock component: prevents the entire App from re-rendering every second
+const Clock = memo(function Clock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const dohaTime = now.toLocaleTimeString("en-US", { timeZone: "Asia/Qatar", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+  const dohaDate = now.toLocaleDateString("en-US", { timeZone: "Asia/Qatar", weekday: "long", month: "long", day: "numeric" });
+  return (
+    <div style={{ textAlign: "right" }}>
+      <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 22, color: "#FFFFFF", fontWeight: 500, letterSpacing: "0.04em" }}>{dohaTime}</div>
+      <div style={{ fontSize: 10, color: "#666672", marginTop: 4 }}>{dohaDate} · AST</div>
+    </div>
+  );
+});
+
+// CSS animation instead of JS interval — zero re-renders, one less timer per badge
 function BreakingBadge() {
-  const [v, setV] = useState(true);
-  useEffect(() => { const i = setInterval(() => setV(x => !x), 800); return () => clearInterval(i); }, []);
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#FF193320", border: "1px solid #FF1933", color: "#FF1933", fontSize: 9, fontWeight: 700, letterSpacing: "0.12em", padding: "2px 7px", borderRadius: 3 }}>
-      <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#FF1933", opacity: v ? 1 : 0.15, transition: "opacity 0.3s" }} />
+      <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#FF1933", animation: "pulse 1.6s ease-in-out infinite" }} />
       BREAKING
     </span>
   );
 }
 
-// 修正: APIに title と url のみを送信する
 async function generateFullSummary(title, url) {
   const response = await fetch("/api/summarize", {
     method: "POST",
@@ -126,19 +142,17 @@ async function generateFullSummary(title, url) {
   return data.summary || "Summary unavailable.";
 }
 
-// 修正: UIをシンプル化。タブを廃止し、ボタン1つに変更。
 function SummaryPanel({ title, url }) {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError]     = useState(null);
 
   const handleGenerateClick = async () => {
     if (summary || loading) return;
     setLoading(true);
     setError(null);
     try {
-      const result = await generateFullSummary(title, url);
-      setSummary(result);
+      setSummary(await generateFullSummary(title, url));
     } catch (e) {
       setError(e.message || "Could not generate summary.");
     }
@@ -173,9 +187,7 @@ function SummaryPanel({ title, url }) {
               ))}
             </div>
           ) : error ? (
-            <p style={{ fontSize: 13, color: "#FF6B6B", lineHeight: 1.6, margin: 0 }}>
-              ⚠ {error}
-            </p>
+            <p style={{ fontSize: 13, color: "#FF6B6B", lineHeight: 1.6, margin: 0 }}>⚠ {error}</p>
           ) : (
             <div>
               {(summary || "").split("\n\n").filter(p => p.trim()).map((para, i) => (
@@ -189,11 +201,12 @@ function SummaryPanel({ title, url }) {
   );
 }
 
-function NewsCard({ item, index }) {
+// memo prevents re-renders when unrelated App state changes (e.g., banner toggle)
+const NewsCard = memo(function NewsCard({ item, index }) {
   const [hovered, setHovered] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const col = CAT_COLORS[item.categoryKey] || CAT_COLORS.international;
-  const catLabel = CATEGORIES.find(c => c.key === item.categoryKey)?.label || "";
+  const col      = CAT_COLORS[item.categoryKey] || CAT_COLORS.international;
+  const catLabel = CAT_LABELS[item.categoryKey] || "";
   return (
     <div
       onMouseEnter={() => setHovered(true)}
@@ -213,13 +226,12 @@ function NewsCard({ item, index }) {
         </div>
       </div>
       <h3 style={{ fontSize: 15, fontWeight: 600, color: expanded || hovered ? "#FFFFFF" : "#E0E0EC", lineHeight: 1.55, margin: 0, transition: "color 0.2s" }}>{item.title}</h3>
-      {/* 修正: Exec Summaryを削除し、titleとurlのみ渡す */}
       {expanded && <SummaryPanel title={item.title} url={item.link} />}
     </div>
   );
-}
+});
 
-function Skeleton() {
+const Skeleton = memo(function Skeleton() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
       {[...Array(7)].map((_, i) => (
@@ -234,24 +246,21 @@ function Skeleton() {
       ))}
     </div>
   );
-}
+});
 
 export default function App() {
-  const [articles, setArticles] = useState([]);
-  const [loading, setLoading]   = useState(true);
-  const [status, setStatus]     = useState({});
-  const [lastSync, setLastSync] = useState(null);
+  const [articles, setArticles]     = useState([]);
+  const [loading, setLoading]       = useState(true);
+  const [status, setStatus]         = useState({});
+  const [lastSync, setLastSync]     = useState(null);
   const [activeCategory, setActiveCategory] = useState("all");
-  const [now, setNow]           = useState(new Date());
   const [showBanner, setShowBanner] = useState(true);
-
-  useEffect(() => { const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t); }, []);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
     const statusMap = {};
-    const seen = new Set();
-    const results = [];
+    const seen      = new Set();
+    const results   = [];
 
     await Promise.allSettled(RSS_SOURCES.map(async src => {
       try {
@@ -259,23 +268,20 @@ export default function App() {
         statusMap[src.source] = "ok";
         items.forEach(item => {
           if (!item.title || seen.has(item.title)) return;
-          if (src.broadFilter) {
-            const score = scoreArticle(item.title, item.desc, src.categoryKey);
-            if (score === 0) return;
-          }
+          if (src.broadFilter && scoreArticle(item.title, item.desc, src.categoryKey) === 0) return;
           seen.add(item.title);
           results.push({
-            id: item.title + src.categoryKey,
-            title: item.title,
+            id:          item.title,
+            title:       item.title,
             categoryKey: src.categoryKey,
-            source: src.source,
-            time: timeAgo(item.pubDate),
-            pubDate: item.pubDate,
-            isBreaking: item.ageHours < 2,
-            link: item.link, // URL保持用
+            source:      src.source,
+            time:        timeAgo(item.pubDate),
+            pubDate:     item.pubDate,
+            isBreaking:  item.ageHours < 2,
+            link:        item.link,
           });
         });
-      } catch (e) {
+      } catch {
         statusMap[src.source] = "error";
       }
     }));
@@ -288,15 +294,43 @@ export default function App() {
   }, []);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
-  useEffect(() => { const t = setInterval(fetchAll, 15 * 60 * 1000); return () => clearInterval(t); }, [fetchAll]);
+  useEffect(() => {
+    const t = setInterval(fetchAll, 15 * 60 * 1000);
+    return () => clearInterval(t);
+  }, [fetchAll]);
 
-  const filtered = activeCategory === "all" ? articles : articles.filter(a => a.categoryKey === activeCategory);
-  const breaking = articles.filter(a => a.isBreaking);
-  const okCount  = Object.values(status).filter(s => s === "ok").length;
-  const errCount = Object.values(status).filter(s => s === "error").length;
+  // Memoized derived values — only recompute when dependencies change
+  const filtered = useMemo(() =>
+    activeCategory === "all" ? articles : articles.filter(a => a.categoryKey === activeCategory),
+    [articles, activeCategory]
+  );
 
-  const dohaTime = now.toLocaleTimeString("en-US", { timeZone: "Asia/Qatar", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
-  const dohaDate = now.toLocaleDateString("en-US", { timeZone: "Asia/Qatar", weekday: "long", month: "long", day: "numeric" });
+  const breaking = useMemo(() => articles.filter(a => a.isBreaking), [articles]);
+
+  const { okCount, errCount } = useMemo(() => ({
+    okCount:  Object.values(status).filter(s => s === "ok").length,
+    errCount: Object.values(status).filter(s => s === "error").length,
+  }), [status]);
+
+  // Single O(n) pass instead of one filter per category button
+  const categoryCounts = useMemo(() => {
+    const counts = { all: articles.length };
+    articles.forEach(a => { counts[a.categoryKey] = (counts[a.categoryKey] || 0) + 1; });
+    return counts;
+  }, [articles]);
+
+  const stats = useMemo(() => [
+    { v: String(articles.length), l: "Articles",     s: "Live feed" },
+    { v: String(breaking.length), l: "Breaking",     s: "< 2h old" },
+    { v: String(okCount),          l: "Sources Live", s: errCount > 0 ? `${errCount} failed` : "All OK ✓" },
+    { v: lastSync
+        ? lastSync.toLocaleTimeString("en-US", { timeZone: "Asia/Qatar", hour: "2-digit", minute: "2-digit", hour12: false })
+        : "--:--",
+      l: "Last Sync", s: "AST" },
+  ], [articles.length, breaking.length, okCount, errCount, lastSync]);
+
+  const accentColor  = activeCategory !== "all" && CAT_COLORS[activeCategory] ? CAT_COLORS[activeCategory].accent : "#F5A623";
+  const sectionLabel = CAT_LABELS[activeCategory] || "All Stories";
 
   return (
     <div style={{ minHeight: "100vh", background: "#1C1C24", fontFamily: "'Noto Sans JP', 'Meiryo', 'メイリオ', 'Hiragino Kaku Gothic ProN', 'ヒラギノ角ゴ ProN W3', 'Yu Gothic', 'YuGothic', 'MS Gothic', 'MS ゴシック', sans-serif", color: "#E0E0EC" }}>
@@ -308,13 +342,9 @@ export default function App() {
         * { box-sizing:border-box; }
         ::-webkit-scrollbar { width:4px; height:4px; }
         ::-webkit-scrollbar-thumb { background:#4A4A54; border-radius:2px; }
-        body {
-          -webkit-font-smoothing: antialiased;
-          -moz-osx-font-smoothing: grayscale;
-          font-size: 15px;
-          line-height: 1.75;
-        }
-        h1, h2, h3 { font-weight: 700; }
+        body { -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; font-size:15px; line-height:1.75; }
+        h1, h2, h3 { font-weight:700; }
+        .refresh-btn:hover:not(:disabled) { border-color:#6A6A74 !important; color:#FFFFFF !important; }
       `}</style>
 
       {showBanner && breaking.length > 0 && (
@@ -339,16 +369,13 @@ export default function App() {
               </div>
               <h1 style={{ fontSize: 26, fontWeight: 700, color: "#FFFFFF", letterSpacing: "-0.01em", margin: 0 }}>News Desk</h1>
             </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 22, color: "#FFFFFF", fontWeight: 500, letterSpacing: "0.04em" }}>{dohaTime}</div>
-              <div style={{ fontSize: 10, color: "#666672", marginTop: 4 }}>{dohaDate} · AST</div>
-            </div>
+            <Clock />
           </div>
           <div style={{ display: "flex", gap: 2, overflowX: "auto" }}>
             {CATEGORIES.map(cat => {
               const isActive = activeCategory === cat.key;
-              const col = cat.key !== "all" ? CAT_COLORS[cat.key] : null;
-              const count = cat.key === "all" ? articles.length : articles.filter(a => a.categoryKey === cat.key).length;
+              const col      = cat.key !== "all" ? CAT_COLORS[cat.key] : null;
+              const count    = categoryCounts[cat.key] || 0;
               return (
                 <button key={cat.key} onClick={() => setActiveCategory(cat.key)} style={{ background: isActive ? "#2A2A34" : "transparent", border: "none", borderBottom: `2px solid ${isActive ? (col ? col.accent : "#F5A623") : "transparent"}`, color: isActive ? "#FFFFFF" : "#7A7A86", padding: "8px 13px 10px", cursor: "pointer", fontSize: 12, fontWeight: 500, whiteSpace: "nowrap", transition: "all 0.15s", borderRadius: "5px 5px 0 0", display: "flex", alignItems: "center", gap: 5, flexShrink: 0, letterSpacing: "0.01em" }}>
                   <span style={{ fontSize: 13 }}>{cat.icon}</span>
@@ -363,12 +390,7 @@ export default function App() {
 
       <main style={{ maxWidth: 880, margin: "0 auto", padding: "16px 20px 56px" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 16 }}>
-          {[
-            { v: articles.length.toString(), l: "Articles",     s: "Live feed" },
-            { v: breaking.length.toString(), l: "Breaking",     s: "< 2h old" },
-            { v: okCount.toString(),          l: "Sources Live", s: errCount > 0 ? `${errCount} failed` : "All OK ✓" },
-            { v: lastSync ? lastSync.toLocaleTimeString("en-US", { timeZone: "Asia/Qatar", hour: "2-digit", minute: "2-digit", hour12: false }) : "--:--", l: "Last Sync", s: "AST" },
-          ].map((s, i) => (
+          {stats.map((s, i) => (
             <div key={i} style={{ background: "#242430", border: "1px solid #3A3A44", borderRadius: 8, padding: "11px 13px" }}>
               <div style={{ fontSize: 20, fontWeight: 600, color: "#FFFFFF", fontFamily: "'DM Mono', monospace" }}>{s.v}</div>
               <div style={{ fontSize: 10, color: "#8A8A96", marginTop: 2 }}>{s.l}</div>
@@ -379,16 +401,16 @@ export default function App() {
 
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ width: 3, height: 14, background: activeCategory !== "all" && CAT_COLORS[activeCategory] ? CAT_COLORS[activeCategory].accent : "#F5A623", borderRadius: 2 }} />
-            <span style={{ fontSize: 10, fontWeight: 700, color: "#A0A0AC", letterSpacing: "0.12em", textTransform: "uppercase" }}>
-              {activeCategory === "all" ? "All Stories" : CATEGORIES.find(c => c.key === activeCategory)?.label}
-            </span>
+            <div style={{ width: 3, height: 14, background: accentColor, borderRadius: 2 }} />
+            <span style={{ fontSize: 10, fontWeight: 700, color: "#A0A0AC", letterSpacing: "0.12em", textTransform: "uppercase" }}>{sectionLabel}</span>
             <span style={{ fontSize: 9, color: "#4A4A56" }}>· tap to expand</span>
           </div>
-          <button onClick={fetchAll} disabled={loading}
-            style={{ background: "none", border: "1px solid #3A3A44", color: loading ? "#4A4A56" : "#8A8A96", fontSize: 10, padding: "5px 12px", borderRadius: 5, cursor: loading ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 6 }}
-            onMouseEnter={e => { if (!loading) { e.currentTarget.style.borderColor = "#6A6A74"; e.currentTarget.style.color = "#FFFFFF"; } }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = "#3A3A44"; e.currentTarget.style.color = loading ? "#4A4A56" : "#8A8A96"; }}>
+          <button
+            className="refresh-btn"
+            onClick={fetchAll}
+            disabled={loading}
+            style={{ background: "none", border: "1px solid #3A3A44", color: loading ? "#4A4A56" : "#8A8A96", fontSize: 10, padding: "5px 12px", borderRadius: 5, cursor: loading ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 6, transition: "border-color 0.15s, color 0.15s" }}
+          >
             <span style={{ display: "inline-block", animation: loading ? "spin 1s linear infinite" : "none" }}>↻</span>
             {loading ? "Fetching…" : "Refresh"}
           </button>
