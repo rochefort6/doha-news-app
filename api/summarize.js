@@ -29,7 +29,7 @@ module.exports = async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const { title, url } = req.body || {};
+  const { title, url, desc } = req.body || {};
   if (!title || !url) return res.status(400).json({ error: "title and url are required" });
 
   try { new URL(url); } catch {
@@ -79,11 +79,38 @@ module.exports = async function handler(req, res) {
     } catch (e) { console.error("AllOrigins error:", e.message); }
   }
 
+  // 4. Wayback Machine archived snapshot (effective for Cloudflare-protected sites like Al Jazeera)
+  if (!articleText) {
+    try {
+      const wbRes = await fetchWithTimeout(
+        `https://archive.org/wayback/available?url=${encodeURIComponent(url)}`,
+        {},
+        8000,
+      );
+      if (wbRes.ok) {
+        const wbData = await wbRes.json();
+        const snapshot = wbData?.archived_snapshots?.closest;
+        if (snapshot?.available && snapshot.url) {
+          const snapRes = await fetchWithTimeout(snapshot.url, {}, 12000);
+          const html = await snapRes.text();
+          const text = extractText(html);
+          if (isValidContent(text)) articleText = text;
+        }
+      }
+    } catch (e) { console.error("Wayback error:", e.message); }
+  }
+
   articleText = articleText.substring(0, 15000);
 
-  const textToAnalyze = articleText.length > 300
-    ? articleText
-    : "Failed to extract the article text due to strict site security. Summarize based ONLY on the headline. Do not invent details.";
+  // 5. RSS description as last resort (always available from the feed)
+  let textToAnalyze;
+  if (articleText.length > 300) {
+    textToAnalyze = articleText;
+  } else if (desc && desc.length > 50) {
+    textToAnalyze = `${desc}\n\n(Note: Full article could not be retrieved. Summary is based on the RSS feed description only.)`;
+  } else {
+    textToAnalyze = "Failed to extract the article text due to strict site security. Summarize based ONLY on the headline. Do not invent details.";
+  }
 
   const prompt = `You are a news analyst for an expat audience in Doha, Qatar. Read the following original article text carefully.
 
@@ -98,6 +125,7 @@ Paragraph 3: Background & Context (Prior events or broader context explicitly me
 
 Constraints:
 - Do NOT invent facts, context, or prior events not explicitly mentioned in the text.
+- If the text contains "(Note: Full article could not be retrieved...)", begin with "Full article content was unavailable for this source." and summarize concisely from the description provided.
 - If the original text says "Failed to extract", state "Full article content could not be retrieved due to security." and briefly summarize the headline.
 - No bullet points.
 
