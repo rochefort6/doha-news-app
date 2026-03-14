@@ -1,4 +1,5 @@
-export default async function handler(req, res) {
+// api/rss.js
+module.exports = async function handler(req, res) {
   const { url } = req.query;
   if (!url) return res.status(400).json({ error: 'No URL' });
   try {
@@ -12,4 +13,4 @@ export default async function handler(req, res) {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
-}
+};

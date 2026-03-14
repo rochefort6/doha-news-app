@@ -3,16 +3,12 @@ import { useState, useEffect, useCallback } from "react";
 const RSS_PROXY = "/api/rss?url=";
 
 const RSS_SOURCES = [
-  // Qatar & Middle East — keyword-filtered from broad feeds
   { categoryKey: "qatar",         source: "Al Jazeera",      url: "https://www.aljazeera.com/xml/rss/all.xml",              broadFilter: true },
   { categoryKey: "qatar",         source: "Gulf Times",       url: "https://www.gulf-times.com/rss/feed/Qatar",             broadFilter: false },
-  // International
   { categoryKey: "international", source: "BBC World",        url: "https://feeds.bbci.co.uk/news/world/rss.xml",           broadFilter: false },
   { categoryKey: "international", source: "Reuters World",    url: "https://feeds.reuters.com/reuters/worldNews",           broadFilter: false },
-  // Business
   { categoryKey: "business",      source: "BBC Business",     url: "https://feeds.bbci.co.uk/news/business/rss.xml",        broadFilter: false },
   { categoryKey: "business",      source: "Reuters Business", url: "https://feeds.reuters.com/reuters/businessNews",        broadFilter: false },
-  // Energy & LNG — keyword-filtered from Reuters general
   { categoryKey: "energy",        source: "Reuters Energy",   url: "https://feeds.reuters.com/reuters/energy",              broadFilter: false },
   { categoryKey: "energy",        source: "Offshore Energy",  url: "https://www.offshore-energy.biz/feed/",                broadFilter: false },
 ];
@@ -32,7 +28,6 @@ const CAT_COLORS = {
   energy:        { accent: "#FFD740", glow: "#FFD74030" },
 };
 
-// Keywords for relevance filtering
 const KEYWORDS = {
   qatar: [
     "qatar","doha","gulf","middle east","saudi","uae","dubai","iran","iraq",
@@ -94,14 +89,14 @@ async function fetchRSS(src) {
   const items = Array.from(xml.querySelectorAll("item"));
   return items.map(item => {
     const get = tag => item.querySelector(tag)?.textContent?.trim() || "";
-    const title = stripHtml(get("title"));   // ★ decode entities in title too
+    const title = stripHtml(get("title"));
     const desc  = stripHtml(get("description"));
     const pubDate = get("pubDate");
     const link  = get("link");
     const ageHours = (Date.now() - new Date(pubDate)) / 3600000;
-    const sentences = desc.match(/[^.!?]+[.!?]+/g) || [];
-    const execSummary = sentences.slice(0, 2).join(" ") || desc.slice(0, 180) + "…";
-    return { title, desc, pubDate, link, ageHours, execSummary };
+    
+    // Exec Summaryの生成処理は完全に削除しました
+    return { title, desc, pubDate, link, ageHours };
   });
 }
 
@@ -116,96 +111,80 @@ function BreakingBadge() {
   );
 }
 
-// ★ FIXED: Calls /api/summarize (Vercel serverless) instead of Anthropic directly
-async function generateFullSummary(title, execSummary) {
+// 修正: APIに title と url のみを送信する
+async function generateFullSummary(title, url) {
   const response = await fetch("/api/summarize", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title, execSummary }),
+    body: JSON.stringify({ title, url }),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
     throw new Error(err.error || "Summarize API error");
   }
   const data = await response.json();
-  return data.summary || execSummary;
+  return data.summary || "Summary unavailable.";
 }
 
-function SummaryPanel({ execSummary, title, url }) {
-  const [mode, setMode] = useState("exec");
-  const [fullSummary, setFullSummary] = useState(null);
-  const [loadingFull, setLoadingFull] = useState(false);
+// 修正: UIをシンプル化。タブを廃止し、ボタン1つに変更。
+function SummaryPanel({ title, url }) {
+  const [summary, setSummary] = useState(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  const handleFullClick = async () => {
-    setMode("detail");
-    if (!fullSummary && !loadingFull) {
-      setLoadingFull(true);
-      setError(null);
-      try {
-        const result = await generateFullSummary(title, execSummary);
-        setFullSummary(result);
-      } catch (e) {
-        setError(e.message || "Could not generate summary.");
-      }
-      setLoadingFull(false);
+  const handleGenerateClick = async () => {
+    if (summary || loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await generateFullSummary(title, url);
+      setSummary(result);
+    } catch (e) {
+      setError(e.message || "Could not generate summary.");
     }
-  };
-
-  const btnBase = {
-    border: "1px solid #3E3E48",
-    fontSize: 9,
-    fontWeight: 700,
-    letterSpacing: "0.1em",
-    padding: "4px 12px",
-    borderRadius: 4,
-    cursor: "pointer",
-    textTransform: "uppercase",
+    setLoading(false);
   };
 
   return (
     <div style={{ marginTop: 14 }} onClick={e => e.stopPropagation()}>
-      <div style={{ display: "flex", gap: 4, marginBottom: 8, alignItems: "center" }}>
-        <button
-          onClick={() => setMode("exec")}
-          style={{ ...btnBase, background: mode === "exec" ? "#4A4A52" : "#2E2E36", borderColor: mode === "exec" ? "#6A6A74" : "#3E3E48", color: mode === "exec" ? "#FFF" : "#8A8A96" }}>
-          Exec Summary
-        </button>
-        <button
-          onClick={handleFullClick}
-          style={{ ...btnBase, background: mode === "detail" ? "#4A4A52" : "#2E2E36", borderColor: mode === "detail" ? "#6A6A74" : "#3E3E48", color: mode === "detail" ? "#FFF" : "#8A8A96", display: "flex", alignItems: "center", gap: 5 }}>
-          {loadingFull && <span style={{ display: "inline-block", animation: "spin 1s linear infinite" }}>↻</span>}
-          Full Summary ✦
-        </button>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
+        {!summary && !loading && (
+          <button
+            onClick={handleGenerateClick}
+            style={{ background: "#4A4A52", border: "1px solid #6A6A74", color: "#FFF", fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", padding: "6px 14px", borderRadius: 5, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, textTransform: "uppercase" }}>
+            Generate AI Summary ✦
+          </button>
+        )}
         {url && (
           <a href={url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
-            style={{ marginLeft: "auto", fontSize: 9, color: "#8A8A96", textDecoration: "none", padding: "4px 10px", border: "1px solid #3E3E48", borderRadius: 4 }}>
-            SOURCE →
+            style={{ marginLeft: !summary && !loading ? "auto" : "0", fontSize: 10, color: "#8A8A96", textDecoration: "none", padding: "5px 12px", border: "1px solid #3E3E48", borderRadius: 5, textTransform: "uppercase", fontWeight: 600 }}>
+            Read Source Article ↗
           </a>
         )}
       </div>
 
-      <div style={{ background: "#1E1E26", border: "1px solid #3E3E48", borderLeft: "3px solid #5A5A64", borderRadius: 6, padding: "14px 16px" }}>
-        {mode === "exec" ? (
-          <p style={{ fontSize: 14, color: "#E8E8F0", lineHeight: 1.8, margin: 0 }}>{execSummary}</p>
-        ) : loadingFull ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {[...Array(5)].map((_, i) => (
-              <div key={i} style={{ height: 13, background: "#2E2E38", borderRadius: 3, width: i === 4 ? "60%" : "100%", animation: "pulse 1.4s ease-in-out infinite", animationDelay: `${i * 0.15}s` }} />
-            ))}
-          </div>
-        ) : error ? (
-          <p style={{ fontSize: 13, color: "#FF6B6B", lineHeight: 1.6, margin: 0 }}>
-            ⚠ {error} — <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: "#5BB8F5" }}>Visit source article</a>
-          </p>
-        ) : (
-          <div>
-            {(fullSummary || "").split("\n\n").filter(p => p.trim()).map((para, i) => (
-              <p key={i} style={{ fontSize: 14, color: "#C0C0CC", lineHeight: 1.85, margin: i === 0 ? 0 : "14px 0 0 0" }}>{para}</p>
-            ))}
-          </div>
-        )}
-      </div>
+      {(loading || summary || error) && (
+        <div style={{ background: "#1E1E26", border: "1px solid #3E3E48", borderLeft: "3px solid #5A5A64", borderRadius: 6, padding: "16px 18px" }}>
+          {loading ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ fontSize: 11, color: "#8A8A96", marginBottom: 4 }}>Analyzing full article...</div>
+              {[...Array(4)].map((_, i) => (
+                <div key={i} style={{ height: 12, background: "#2E2E38", borderRadius: 3, width: i === 3 ? "50%" : "100%", animation: "pulse 1.4s ease-in-out infinite", animationDelay: `${i * 0.15}s` }} />
+              ))}
+            </div>
+          ) : error ? (
+            <p style={{ fontSize: 13, color: "#FF6B6B", lineHeight: 1.6, margin: 0 }}>
+              ⚠ {error}
+            </p>
+          ) : (
+            <div>
+              {(summary || "").split("\n\n").filter(p => p.trim()).map((para, i) => (
+                <p key={i} style={{ fontSize: 14, color: "#D0D0DC", lineHeight: 1.85, margin: i === 0 ? 0 : "14px 0 0 0" }}>{para}</p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -233,9 +212,9 @@ function NewsCard({ item, index }) {
           <span style={{ fontSize: 13, color: expanded ? col.accent : "#666672", display: "inline-block", transform: expanded ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s, color 0.2s" }}>›</span>
         </div>
       </div>
-      {/* ★ フォント: Meiryo / Noto Sans JP で可読性向上 */}
       <h3 style={{ fontSize: 15, fontWeight: 600, color: expanded || hovered ? "#FFFFFF" : "#E0E0EC", lineHeight: 1.55, margin: 0, transition: "color 0.2s" }}>{item.title}</h3>
-      {expanded && <SummaryPanel execSummary={item.execSummary} title={item.title} url={item.url} />}
+      {/* 修正: Exec Summaryを削除し、titleとurlのみ渡す */}
+      {expanded && <SummaryPanel title={item.title} url={item.link} />}
     </div>
   );
 }
@@ -280,9 +259,6 @@ export default function App() {
         statusMap[src.source] = "ok";
         items.forEach(item => {
           if (!item.title || seen.has(item.title)) return;
-          // ★ フィルタリング説明:
-          // broadFilter=true → キーワードスコア1以上の記事のみ採用（広範フィードから関連記事だけ取得）
-          // broadFilter=false → カテゴリ専用フィード → 全件採用（元々その分野の記事しかない）
           if (src.broadFilter) {
             const score = scoreArticle(item.title, item.desc, src.categoryKey);
             if (score === 0) return;
@@ -296,8 +272,7 @@ export default function App() {
             time: timeAgo(item.pubDate),
             pubDate: item.pubDate,
             isBreaking: item.ageHours < 2,
-            execSummary: item.execSummary,
-            url: item.link,
+            link: item.link, // URL保持用
           });
         });
       } catch (e) {
@@ -324,7 +299,6 @@ export default function App() {
   const dohaDate = now.toLocaleDateString("en-US", { timeZone: "Asia/Qatar", weekday: "long", month: "long", day: "numeric" });
 
   return (
-    // ★ フォント: Noto Sans JP → メイリオ → ゴシック系の順でフォールバック
     <div style={{ minHeight: "100vh", background: "#1C1C24", fontFamily: "'Noto Sans JP', 'Meiryo', 'メイリオ', 'Hiragino Kaku Gothic ProN', 'ヒラギノ角ゴ ProN W3', 'Yu Gothic', 'YuGothic', 'MS Gothic', 'MS ゴシック', sans-serif", color: "#E0E0EC" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=DM+Mono:wght@400;500&display=swap');
