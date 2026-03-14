@@ -15,14 +15,13 @@ module.exports = async function handler(req, res) {
 
   let articleText = "";
 
-  // 1. まずはJina Readerで試す（BBCなどはこれで成功する）
+  // 1. まずはJina Readerで試す
   try {
     const jinaRes = await fetch(`https://r.jina.ai/${url}`, {
       headers: { "Accept": "text/plain" }
     });
     if (jinaRes.ok) {
       const text = await jinaRes.text();
-      // Cloudflareのブロック画面（Just a moment...等）ではないか確認
       if (text.length > 300 && !text.includes("Just a moment...") && !text.includes("Enable JavaScript")) {
         articleText = text;
       }
@@ -31,17 +30,15 @@ module.exports = async function handler(req, res) {
     console.error("Jina extraction error:", e);
   }
 
-  // 2. Jinaがブロックされた場合（Al Jazeera等）はGooglebotになりすまして直接HTMLを取得
+  // 2. Jinaがブロックされた場合はGooglebotになりすまして直接HTMLを取得
   if (!articleText) {
     try {
       const directRes = await fetch(url, {
         headers: { 
-          // ニュースサイトは検索エンジンからのアクセスを許可している穴を突く
           'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)' 
         }
       });
       const html = await directRes.text();
-      // <p>タグの中身だけを抽出
       const paragraphs = html.match(/<p\b[^>]*>(.*?)<\/p>/gis) || [];
       const text = paragraphs
         .map(p => p.replace(/<[^>]+>/g, '').trim())
@@ -56,7 +53,6 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  // トークン上限対策
   articleText = articleText.substring(0, 15000);
 
   const hasContent = articleText.length > 300;
@@ -64,6 +60,7 @@ module.exports = async function handler(req, res) {
     ? articleText 
     : "Failed to extract the article text due to strict site security. Summarize based ONLY on the headline.";
 
+  // ★変更点：3パラグラフの構成を「事実と詳細の抽出」に特化
   const prompt = `You are a news analyst for an expat audience in Doha, Qatar. 
 Read the following original article text carefully.
 
@@ -71,14 +68,14 @@ Headline: ${title}
 Original Text:
 ${textToAnalyze}
 
-Task: Write a comprehensive, factual 3-paragraph summary and analysis in English.
-Paragraph 1: What happened (strictly base this ONLY on the provided text. Include specific names, quotes, or numbers if available).
-Paragraph 2: Why it matters for Qatar or the broader Middle East region.
-Paragraph 3: Wider global implications or next steps.
+Task: Write a comprehensive, factual 3-paragraph summary in English based strictly on the provided text.
+Paragraph 1: Core Event (What happened, main conclusion).
+Paragraph 2: Key Details (Specific names, numbers, quotes, and critical facts).
+Paragraph 3: Background & Context (Prior events or broader context explicitly mentioned in the article).
 
 Constraints: 
 - Do NOT invent facts, context, or prior events not explicitly mentioned in the text.
-- If the original text says "Failed to extract", state "Full article content could not be retrieved." and briefly analyze the headline.
+- If the original text says "Failed to extract", state "Full article content could not be retrieved." and briefly summarize the headline.
 - No bullet points.
 
 Write the 3-paragraph summary now:`;
